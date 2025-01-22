@@ -6,33 +6,71 @@
     <title>Photo Location Viewer</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
         #map {
-            height: 400px;
+            height: 50vh;
             width: 100%;
-            margin: 20px 0;
+            margin: 10px 0;
         }
         .container {
-            max-width: 800px;
+            max-width: 100%;
             margin: 0 auto;
-            padding: 20px;
+            padding: 15px;
+            box-sizing: border-box;
         }
         .metadata {
-            margin-top: 20px;
+            margin-top: 15px;
             padding: 15px;
             background-color: #f5f5f5;
             border-radius: 5px;
+            word-wrap: break-word;
         }
         #preview {
             max-width: 100%;
-            max-height: 300px;
-            margin: 20px 0;
+            max-height: 50vh;
+            margin: 10px auto;
+            display: block;
+        }
+        #photoInput {
+            width: 100%;
+            max-width: 300px;
+            margin: 10px 0;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 10px 0;
+        }
+        .error-message {
+            color: #721c24;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            #map {
+                height: 40vh;
+            }
+            #preview {
+                max-height: 40vh;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Photo Location Viewer</h1>
-        <input type="file" id="photoInput" accept="image/*">
+        <input type="file" id="photoInput" accept="image/*" capture="environment">
+        <div id="loading" class="loading">Loading photo data...</div>
         <img id="preview" style="display: none;">
         <div id="map"></div>
         <div id="metadata" class="metadata"></div>
@@ -46,10 +84,12 @@
 
         // Initialize the map
         function initMap() {
-            map = L.map('map').setView([0, 0], 2);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '© OpenStreetMap contributors'
-            }).addTo(map);
+            if (map === null) {
+                map = L.map('map').setView([0, 0], 2);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors'
+                }).addTo(map);
+            }
         }
 
         // Convert GPS coordinates from EXIF format to decimal
@@ -63,53 +103,80 @@
 
         // Extract GPS coordinates from EXIF data
         function getGPSCoordinates(tags) {
-            if (!tags.GPSLatitude || !tags.GPSLongitude) {
+            try {
+                if (!tags.GPSLatitude || !tags.GPSLongitude) {
+                    return null;
+                }
+
+                const lat = convertToDecimal(
+                    tags.GPSLatitude[0].numerator / tags.GPSLatitude[0].denominator,
+                    tags.GPSLatitude[1].numerator / tags.GPSLatitude[1].denominator,
+                    tags.GPSLatitude[2].numerator / tags.GPSLatitude[2].denominator,
+                    tags.GPSLatitudeRef
+                );
+
+                const lng = convertToDecimal(
+                    tags.GPSLongitude[0].numerator / tags.GPSLongitude[0].denominator,
+                    tags.GPSLongitude[1].numerator / tags.GPSLongitude[1].denominator,
+                    tags.GPSLongitude[2].numerator / tags.GPSLongitude[2].denominator,
+                    tags.GPSLongitudeRef
+                );
+
+                return { latitude: lat, longitude: lng };
+            } catch (error) {
+                console.error('Error parsing GPS coordinates:', error);
                 return null;
             }
-
-            const lat = convertToDecimal(
-                tags.GPSLatitude[0].numerator / tags.GPSLatitude[0].denominator,
-                tags.GPSLatitude[1].numerator / tags.GPSLatitude[1].denominator,
-                tags.GPSLatitude[2].numerator / tags.GPSLatitude[2].denominator,
-                tags.GPSLatitudeRef
-            );
-
-            const lng = convertToDecimal(
-                tags.GPSLongitude[0].numerator / tags.GPSLongitude[0].denominator,
-                tags.GPSLongitude[1].numerator / tags.GPSLongitude[1].denominator,
-                tags.GPSLongitude[2].numerator / tags.GPSLongitude[2].denominator,
-                tags.GPSLongitudeRef
-            );
-
-            return { latitude: lat, longitude: lng };
         }
 
-        // Handle file upload
-        document.getElementById('photoInput').addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            if (!file) return;
+        // Format metadata for display
+        function formatMetadata(tags) {
+            const dateStr = tags.DateTime || tags.DateTimeOriginal || tags.DateTimeDigitized || 'Unknown';
+            const exposureStr = tags.ExposureTime ? 
+                `1/${Math.round(1/tags.ExposureTime)}` : 'Unknown';
+            
+            return `
+                <h3>Photo Metadata</h3>
+                <p>Camera: ${tags.Make || 'Unknown'} ${tags.Model || ''}</p>
+                <p>Date Taken: ${dateStr}</p>
+                <p>Exposure: ${exposureStr}s</p>
+                <p>F-Stop: f/${tags.FNumber || 'Unknown'}</p>
+                <p>ISO: ${tags.ISO || 'Unknown'}</p>
+            `;
+        }
 
-            // Show image preview
+        // Process the uploaded file
+        async function processFile(file) {
+            const loading = document.getElementById('loading');
             const preview = document.getElementById('preview');
-            preview.style.display = 'block';
-            preview.src = URL.createObjectURL(file);
+            const metadataDiv = document.getElementById('metadata');
 
-            // Read EXIF data
-            EXIF.getData(file, function() {
-                const metadataDiv = document.getElementById('metadata');
-                const allTags = EXIF.getAllTags(this);
-                console.log('All EXIF tags:', allTags); // Helpful for debugging
+            try {
+                loading.style.display = 'block';
+                preview.style.display = 'none';
+                metadataDiv.innerHTML = '';
 
-                const gpsData = getGPSCoordinates(allTags);
-                
+                // Create a promise to handle EXIF data reading
+                const exifData = await new Promise((resolve, reject) => {
+                    EXIF.getData(file, function() {
+                        const tags = EXIF.getAllTags(this);
+                        console.log('EXIF tags:', tags); // For debugging
+                        resolve(tags);
+                    });
+                });
+
+                // Show image preview
+                preview.src = URL.createObjectURL(file);
+                preview.style.display = 'block';
+
+                // Initialize map
+                initMap();
+
+                // Process GPS data if available
+                const gpsData = getGPSCoordinates(exifData);
                 if (gpsData) {
                     const { latitude, longitude } = gpsData;
                     
-                    // Initialize map if not already done
-                    if (!map) {
-                        initMap();
-                    }
-
                     // Update map location
                     map.setView([latitude, longitude], 13);
                     
@@ -120,32 +187,43 @@
                         marker = L.marker([latitude, longitude]).addTo(map);
                     }
 
-                    // Display metadata
-                    metadataDiv.innerHTML = `
-                        <h3>Photo Metadata</h3>
-                        <p>Location: ${latitude.toFixed(6)}°, ${longitude.toFixed(6)}°</p>
-                        <p>Camera: ${allTags.Make || 'Unknown'} ${allTags.Model || ''}</p>
-                        <p>Date Taken: ${allTags.DateTime || 'Unknown'}</p>
-                        <p>Exposure: ${allTags.ExposureTime ? '1/' + (1 / allTags.ExposureTime).toFixed(0) : 'Unknown'}s</p>
-                        <p>F-Stop: f/${allTags.FNumber || 'Unknown'}</p>
-                        <p>ISO: ${allTags.ISO || 'Unknown'}</p>
-                    `;
+                    metadataDiv.innerHTML = formatMetadata(exifData) + 
+                        `<p>Location: ${latitude.toFixed(6)}°, ${longitude.toFixed(6)}°</p>`;
                 } else {
-                    metadataDiv.innerHTML = `
-                        <h3>Photo Metadata</h3>
-                        <p>No GPS data found in this image</p>
-                        <p>Camera: ${allTags.Make || 'Unknown'} ${allTags.Model || ''}</p>
-                        <p>Date Taken: ${allTags.DateTime || 'Unknown'}</p>
-                        <p>Exposure: ${allTags.ExposureTime ? '1/' + (1 / allTags.ExposureTime).toFixed(0) : 'Unknown'}s</p>
-                        <p>F-Stop: f/${allTags.FNumber || 'Unknown'}</p>
-                        <p>ISO: ${allTags.ISO || 'Unknown'}</p>
-                    `;
+                    metadataDiv.innerHTML = formatMetadata(exifData) + 
+                        '<p>No GPS data found in this image</p>';
                 }
-            });
+
+            } catch (error) {
+                console.error('Error processing file:', error);
+                metadataDiv.innerHTML = `
+                    <div class="error-message">
+                        Error processing image: ${error.message}
+                    </div>`;
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        // Handle file upload
+        document.getElementById('photoInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                processFile(file);
+            }
         });
 
         // Initialize map on page load
         initMap();
+
+        // Handle mobile orientation changes
+        window.addEventListener('orientationchange', function() {
+            setTimeout(function() {
+                if (map) {
+                    map.invalidateSize();
+                }
+            }, 200);
+        });
     </script>
 </body>
 </html>
