@@ -3,227 +3,202 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo Location Viewer</title>
+    <title>Precise Location Camera</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <style>
         body {
             margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        }
-        #map {
-            height: 50vh;
-            width: 100%;
-            margin: 10px 0;
+            padding: 15px;
+            font-family: system-ui, -apple-system, sans-serif;
         }
         .container {
-            max-width: 100%;
+            max-width: 600px;
             margin: 0 auto;
-            padding: 15px;
-            box-sizing: border-box;
         }
-        .metadata {
-            margin-top: 15px;
+        #map {
+            height: 300px;
+            width: 100%;
+            margin: 15px 0;
+            border-radius: 8px;
+        }
+        #locationInfo {
+            background: #f0f0f0;
             padding: 15px;
-            background-color: #f5f5f5;
-            border-radius: 5px;
-            word-wrap: break-word;
+            border-radius: 8px;
+            margin: 15px 0;
         }
         #preview {
             max-width: 100%;
-            max-height: 50vh;
-            margin: 10px auto;
+            max-height: 300px;
             display: block;
+            margin: 15px auto;
+            border-radius: 8px;
         }
-        #photoInput {
+        .button {
+            background: #007AFF;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            margin: 5px 0;
             width: 100%;
-            max-width: 300px;
-            margin: 10px 0;
+            cursor: pointer;
         }
-        .loading {
-            display: none;
-            text-align: center;
-            margin: 10px 0;
+        .button:disabled {
+            background: #ccc;
         }
-        .error-message {
-            color: #721c24;
-            background-color: #f8d7da;
-            border: 1px solid #f5c6cb;
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 4px;
+        .accuracy-high {
+            color: green;
         }
-        @media (max-width: 768px) {
-            .container {
-                padding: 10px;
-            }
-            #map {
-                height: 40vh;
-            }
-            #preview {
-                max-height: 40vh;
-            }
+        .accuracy-medium {
+            color: orange;
+        }
+        .accuracy-low {
+            color: red;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Photo Location Viewer</h1>
-        <input type="file" id="photoInput" accept="image/*" capture="environment">
-        <div id="loading" class="loading">Loading photo data...</div>
+        <h1>Precise Location Camera</h1>
+        <button id="startTracking" class="button">Start Location Tracking</button>
+        <div id="locationInfo">Waiting for location...</div>
+        <button id="takePhoto" class="button" disabled>Take Photo</button>
+        <input type="file" id="photoInput" accept="image/*" capture="environment" style="display: none;">
         <img id="preview" style="display: none;">
         <div id="map"></div>
-        <div id="metadata" class="metadata"></div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/exif-js/2.3.0/exif.js"></script>
     <script>
-        let map = null;
-        let marker = null;
+        let map, marker;
+        let currentLocation = null;
+        let watchId = null;
+        let bestAccuracy = Infinity;
+        let bestLocation = null;
 
-        // Initialize the map
+        // Initialize map
         function initMap() {
-            if (map === null) {
-                map = L.map('map').setView([0, 0], 2);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '© OpenStreetMap contributors'
-                }).addTo(map);
-            }
+            map = L.map('map').setView([0, 0], 2);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
         }
 
-        // Convert GPS coordinates from EXIF format to decimal
-        function convertToDecimal(degrees, minutes, seconds, direction) {
-            let decimal = degrees + (minutes / 60) + (seconds / 3600);
-            if (direction === 'S' || direction === 'W') {
-                decimal = -decimal;
-            }
-            return decimal;
+        // Format location data
+        function formatLocation(location) {
+            return {
+                latitude: location.coords.latitude,
+                longitude: location.coords.longitude,
+                accuracy: location.coords.accuracy,
+                altitude: location.coords.altitude,
+                altitudeAccuracy: location.coords.altitudeAccuracy,
+                timestamp: location.timestamp
+            };
         }
 
-        // Extract GPS coordinates from EXIF data
-        function getGPSCoordinates(tags) {
-            try {
-                if (!tags.GPSLatitude || !tags.GPSLongitude) {
-                    return null;
-                }
-
-                const lat = convertToDecimal(
-                    tags.GPSLatitude[0].numerator / tags.GPSLatitude[0].denominator,
-                    tags.GPSLatitude[1].numerator / tags.GPSLatitude[1].denominator,
-                    tags.GPSLatitude[2].numerator / tags.GPSLatitude[2].denominator,
-                    tags.GPSLatitudeRef
-                );
-
-                const lng = convertToDecimal(
-                    tags.GPSLongitude[0].numerator / tags.GPSLongitude[0].denominator,
-                    tags.GPSLongitude[1].numerator / tags.GPSLongitude[1].denominator,
-                    tags.GPSLongitude[2].numerator / tags.GPSLongitude[2].denominator,
-                    tags.GPSLongitudeRef
-                );
-
-                return { latitude: lat, longitude: lng };
-            } catch (error) {
-                console.error('Error parsing GPS coordinates:', error);
-                return null;
-            }
-        }
-
-        // Format metadata for display
-        function formatMetadata(tags) {
-            const dateStr = tags.DateTime || tags.DateTimeOriginal || tags.DateTimeDigitized || 'Unknown';
-            const exposureStr = tags.ExposureTime ? 
-                `1/${Math.round(1/tags.ExposureTime)}` : 'Unknown';
+        // Update location display
+        function updateLocationInfo(location) {
+            const info = document.getElementById('locationInfo');
+            const accuracy = location.coords.accuracy;
+            let accuracyClass = 'accuracy-low';
             
-            return `
-                <h3>Photo Metadata</h3>
-                <p>Camera: ${tags.Make || 'Unknown'} ${tags.Model || ''}</p>
-                <p>Date Taken: ${dateStr}</p>
-                <p>Exposure: ${exposureStr}s</p>
-                <p>F-Stop: f/${tags.FNumber || 'Unknown'}</p>
-                <p>ISO: ${tags.ISO || 'Unknown'}</p>
+            if (accuracy < 10) accuracyClass = 'accuracy-high';
+            else if (accuracy < 20) accuracyClass = 'accuracy-medium';
+
+            info.innerHTML = `
+                <p><strong>Current Accuracy:</strong> <span class="${accuracyClass}">${accuracy.toFixed(1)} meters</span></p>
+                <p><strong>Latitude:</strong> ${location.coords.latitude.toFixed(6)}°</p>
+                <p><strong>Longitude:</strong> ${location.coords.longitude.toFixed(6)}°</p>
+                <p><strong>Altitude:</strong> ${location.coords.altitude ? location.coords.altitude.toFixed(1) + 'm' : 'Not available'}</p>
+                <p><strong>Altitude Accuracy:</strong> ${location.coords.altitudeAccuracy ? location.coords.altitudeAccuracy.toFixed(1) + 'm' : 'Not available'}</p>
+                <p><strong>Timestamp:</strong> ${new Date(location.timestamp).toLocaleString()}</p>
             `;
+
+            // Update map
+            const latlng = [location.coords.latitude, location.coords.longitude];
+            map.setView(latlng, 16);
+            
+            if (!marker) {
+                marker = L.marker(latlng).addTo(map);
+                // Add accuracy circle
+                L.circle(latlng, {
+                    radius: accuracy,
+                    color: 'blue',
+                    fillColor: '#3388ff',
+                    fillOpacity: 0.2
+                }).addTo(map);
+            } else {
+                marker.setLatLng(latlng);
+            }
         }
 
-        // Process the uploaded file
-        async function processFile(file) {
-            const loading = document.getElementById('loading');
-            const preview = document.getElementById('preview');
-            const metadataDiv = document.getElementById('metadata');
+        // Start location tracking
+        document.getElementById('startTracking').addEventListener('click', function() {
+            if (!navigator.geolocation) {
+                alert('Geolocation is not supported by your browser');
+                return;
+            }
 
-            try {
-                loading.style.display = 'block';
-                preview.style.display = 'none';
-                metadataDiv.innerHTML = '';
+            // Request high accuracy location
+            const options = {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            };
 
-                // Create a promise to handle EXIF data reading
-                const exifData = await new Promise((resolve, reject) => {
-                    EXIF.getData(file, function() {
-                        const tags = EXIF.getAllTags(this);
-                        console.log('EXIF tags:', tags); // For debugging
-                        resolve(tags);
-                    });
-                });
+            watchId = navigator.geolocation.watchPosition(
+                function(location) {
+                    currentLocation = location;
+                    updateLocationInfo(location);
+                    
+                    // Update best location if this reading is more accurate
+                    if (location.coords.accuracy < bestAccuracy) {
+                        bestAccuracy = location.coords.accuracy;
+                        bestLocation = location;
+                    }
+                    
+                    // Enable photo button if accuracy is good enough
+                    document.getElementById('takePhoto').disabled = location.coords.accuracy > 20;
+                },
+                function(error) {
+                    alert('Error getting location: ' + error.message);
+                },
+                options
+            );
 
-                // Show image preview
+            this.disabled = true;
+        });
+
+        // Handle photo capture
+        document.getElementById('takePhoto').addEventListener('click', function() {
+            document.getElementById('photoInput').click();
+        });
+
+        document.getElementById('photoInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file && currentLocation) {
+                const preview = document.getElementById('preview');
                 preview.src = URL.createObjectURL(file);
                 preview.style.display = 'block';
 
-                // Initialize map
-                initMap();
+                // Create location data file
+                const locationData = formatLocation(bestLocation || currentLocation);
+                const dataStr = JSON.stringify(locationData, null, 2);
+                const dataBlob = new Blob([dataStr], { type: 'application/json' });
+                const dataUrl = URL.createObjectURL(dataBlob);
 
-                // Process GPS data if available
-                const gpsData = getGPSCoordinates(exifData);
-                if (gpsData) {
-                    const { latitude, longitude } = gpsData;
-                    
-                    // Update map location
-                    map.setView([latitude, longitude], 13);
-                    
-                    // Add or update marker
-                    if (marker) {
-                        marker.setLatLng([latitude, longitude]);
-                    } else {
-                        marker = L.marker([latitude, longitude]).addTo(map);
-                    }
-
-                    metadataDiv.innerHTML = formatMetadata(exifData) + 
-                        `<p>Location: ${latitude.toFixed(6)}°, ${longitude.toFixed(6)}°</p>`;
-                } else {
-                    metadataDiv.innerHTML = formatMetadata(exifData) + 
-                        '<p>No GPS data found in this image</p>';
-                }
-
-            } catch (error) {
-                console.error('Error processing file:', error);
-                metadataDiv.innerHTML = `
-                    <div class="error-message">
-                        Error processing image: ${error.message}
-                    </div>`;
-            } finally {
-                loading.style.display = 'none';
-            }
-        }
-
-        // Handle file upload
-        document.getElementById('photoInput').addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            if (file) {
-                processFile(file);
+                // Create download link
+                const link = document.createElement('a');
+                link.href = dataUrl;
+                link.download = `location_${new Date().getTime()}.json`;
+                link.click();
             }
         });
 
-        // Initialize map on page load
+        // Initialize map
         initMap();
-
-        // Handle mobile orientation changes
-        window.addEventListener('orientationchange', function() {
-            setTimeout(function() {
-                if (map) {
-                    map.invalidateSize();
-                }
-            }, 200);
-        });
     </script>
 </body>
 </html>
